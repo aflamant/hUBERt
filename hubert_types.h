@@ -1,8 +1,7 @@
-#ifndef _MSG_H_
-#define _MSG_H_
+#ifndef _HUBERT_TYPES_H
+#define _HUBERT_TYPES_H
 
 #define N_plats 5
-#define N_RESTOS 20
 
 typedef struct msgbuf{
         long mtype; //pid de destinataire
@@ -11,7 +10,7 @@ typedef struct msgbuf{
         int id_resto; //type de resto ou pid de resto
         int quantity; //quantité commandé
         int id_plat; //type de plat commandé
-    } MSG;
+} MSG;
 
 typedef struct plat {
     int id_plat;

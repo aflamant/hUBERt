@@ -6,64 +6,38 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
-#include "msg.h"
-#include "semaphore.h"
-#include "shmem.h"
+
+#include "hubert_types.h"
 #include "resto.h"
 
-/*
-*  Déclaration des variables.
-*/
+#include "semaphore.h"
+#include "shmem.h"
+
+/* *************************************
+*  Déclaration des variables globales.
+* *************************************/
 int mutex_id, shm_id, msg_id, pid_cuisine;
 MSG msg_buf;
 PLAT* stock;
 
-void fermeture_resto() {
-
-   kill(pid_cuisine,9);
-
-   msg_buf.mtype = 1;
-   msg_buf.signature = getpid();
-   msg_buf.type = -1;
-   msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);
-
-   /*
-      Suppression des IPC.
-   */
-   int res = remove_shmem(shm_id);
-   if (res == -1) {
-     printf("Erreur suppression mémoire.\n");
-   } else {
-     printf("Mémoire supprimée.\n");
-   }
-
-   res = remove_semaphore(mutex_id);
-   if (res == -1) {
-     printf("Erreur suppression mutex.\n");
-   } else {
-     printf("Mutex supprimé.\n");
-   }
-
-   exit(0);
-}
-
-void sigusr1_handle(){}
-
 int main() {
 
-   /*
-      Création des IPC
-   */
-
-   //creation mémoire partagée
-   shm_id = create_shmem(getpid(), N_plats*sizeof(PLAT));
+   /* ****************************************
+   *        Creation mémoire partagée
+   * ****************************************/
+   shm_id = create_shmem(getpid(), N_plats*sizeof(PLAT)); /* la clé est le pid du processus de manière à pouvoir être unique pour chaque resto */
    if (shm_id == -1) {
      printf("Erreur création mémoire\n");
      exit(-1);
   } //else printf("ShM créée. id = %d\n", shm_id);
+  stock = attach_shmem(shm_id);
 
-   //creation du mutex
-   key_t clef_mutex = ftok("resto.c",getpid());
+
+
+  /* ****************************************
+  *            Creation du mutex
+  * ****************************************/
+   key_t clef_mutex = ftok("resto.c",getpid()); /* idem ici la clé dépend du pid pour être unique à chaque resto */
    if (clef_mutex == -1) {
       printf("Erreur de création clé du mutex.\n" );
       exit(-1);
@@ -74,19 +48,24 @@ int main() {
       printf("Erreur création mutex\n");
       exit(-1);
    } //else printf("Mutex créé. id = %d\n", mutex_id);
-
    init_semaphore(mutex_id,1);
 
-   stock = attach_shmem(shm_id);
 
+   pid_cuisine = fork(); /* FORK DE CRÉATION DE LA CUISINE */
 
-   pid_cuisine = fork();
+   if (pid_cuisine > 0) {
 
-   if (pid_cuisine > 0) { // CODE RESTO
+      /* #########################################################
+         #                                                       #
+         #                   CODE DU RESTO                       #
+         #                                                       #
+         ######################################################### */
 
-      signal(SIGINT, fermeture_resto); //redirection du signal d'interruption
+      signal(SIGINT, fermeture_resto); /* redirection du signal d'interruption vers notre fonction de fermeture du resto */
 
-      //ouverture file de messages
+      /* *********************************************************
+      *             Ouverture de la file de messages
+      * **********************************************************/
       key_t clef = ftok("hubert.c", 0);
       if (clef == -1) {
          printf("Erreur de création clé de la chaîne de messages.\n" );
@@ -99,6 +78,10 @@ int main() {
          exit(-1);
       } //else printf("Connection à la CdM réussie. id = %d\n", msg_id);
 
+
+      /* *********************************************************
+      *             Ouverture du sémaphore coursiers
+      * **********************************************************/
       key_t clef_coursiers = ftok("hubert.c", 1);
       if (clef_coursiers == -1) {
          printf("Erreur de création clé des coursiers.\n" );
@@ -111,9 +94,11 @@ int main() {
          exit(-1);
       } //else printf("Semaphore coursiers ouvert. id = %d\n", coursiers_id);
 
-      /*
-         Initialistation resto
-      */
+
+
+      /* *********************************************************
+      *             Initialistation du resto
+      * **********************************************************/
       int type_resto;
       int res;
       do {
@@ -125,51 +110,68 @@ int main() {
       } while (res == -1);
 
       kill(pid_cuisine, SIGUSR1); //réveil de la cuisine
+      afficher_stock();
 
 
-      /*
-         Comportement
-      */
+      /* *********************************************************
+      *             Comportement du resto
+      * **********************************************************/
       while (1) {
-         //attente d'une commande
-         msgrcv(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), getpid(), 0);
+
+         msgrcv(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), getpid(), 0); /* attente d'une commande */
 
          printf("Reception d'une commande\n");
-         //diminuer stock
-         down(mutex_id);
-         if (stock[msg_buf.id_plat].quantity >= msg_buf.quantity) {
-            stock[msg_buf.id_plat].quantity -= msg_buf.quantity; //a changer
-            //renvoyer réponse
-            down(coursiers_id);
+
+         down(mutex_id); /* on réserve l'accès à la zone critique de la mémoire partagée */
+
+         if (stock[msg_buf.id_plat].quantity >= msg_buf.quantity && msg_buf.quantity >0) {  /*si la commande est valide */
+            stock[msg_buf.id_plat].quantity -= msg_buf.quantity;   /* diminuer le stock */
+
+            down(coursiers_id); /* reservation d'un coursier */
             msg_buf.mtype = 1;
-            msg_buf.id_resto = msg_buf.signature; //ici correspond plutot à id_user
+            msg_buf.id_resto = msg_buf.signature; /* ici utilisé comme id_user */
             msg_buf.signature = getpid();
             msg_buf.type = 3;
             msg_buf.quantity = 0;
-            msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);
-         } else {
-            printf("Stock insuffisant\n");
+            msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0); /* envoi de la commande via hubert */
+         }
+
+         else {                                                      /* si la commande est invalide */
+            printf("Commande invalide\n");
             msg_buf.mtype = 1;
-            msg_buf.id_resto = msg_buf.signature; //ici correspond plutot à id_user
+            msg_buf.id_resto = msg_buf.signature;
             msg_buf.signature = getpid();
             msg_buf.type = 3;
-            msg_buf.quantity = -1;
+            msg_buf.quantity = -1;     /* on renvoie l'erreur via hubert */
             msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);
          }
 
-         afficher_stock();
+         sleep(2);  /* Donne le temps te voir les affichages de reception de la commande */
 
-         up(mutex_id);
+         afficher_stock(); /* le stock a changé et on l'affiche donc actualisé */
+
+         up(mutex_id); /* on rend l'accès à la zone crtitique de la mémoire partagée */
 
 
       }
-   } else if (pid_cuisine == 0) { //code de la cuisine
+   } else if (pid_cuisine == 0) {
+
+      /* #########################################################
+         #                                                       #
+         #                 CODE DE LA CUISINE                    #
+         #                                                       #
+         ######################################################### */
 
       signal(SIGUSR1,sigusr1_handle);
-      pause(); //on attend que le resto se soit initialisé
 
+      pause(); /* on attend le signal du resto pour démarrer */
+
+
+      /* ***************************************
+      *        Comportement de la cuisine
+      * ***************************************/
       while (1) {
-         sleep (10);
+         sleep (10);          /* la cuisine incrémente la quantité de tous les plats toutes les 10 secondes jusqu'à une valeur max (10 ici) */
          down(mutex_id);
          int i;
          for (i=0; i<N_plats; i++) {
@@ -177,7 +179,7 @@ int main() {
                stock[i].quantity++;
             }
          }
-         afficher_stock();
+         afficher_stock();    /* après chaque mise à jour du stock, on affiche le stock actualisé dans la fenêtre du resto */
          up(mutex_id);
       }
    }
@@ -195,18 +197,8 @@ void afficher_stock(){
 
 int enregistrer_resto(int type_resto){
 
-   stock[0].id_plat = 0 ;
-   stock[0].quantity = 5;
-   stock[1].id_plat =  1;
-   stock[1].quantity = 5;
-   stock[2].id_plat =  2;
-   stock[2].quantity = 5;
-   stock[3].id_plat =  3;
-   stock[3].quantity = 5;
-   stock[4].id_plat =  4;
-   stock[4].quantity = 5;
 
-   switch (type_resto) {
+   switch (type_resto) {      /* Suivant le type du resto, les plats ont différents noms */
 
       case 1 :
          strcpy(stock[0].name,"Penne sicilienne        ");
@@ -233,16 +225,60 @@ int enregistrer_resto(int type_resto){
          break;
 
       default :
-         return -1;
+         return -1; /* si le type est invalide, la fonction échoue et retourne 1 */
    }
 
+   stock[0].id_plat = 0 ;
+   stock[0].quantity = 5;
+   stock[1].id_plat =  1;
+   stock[1].quantity = 5;
+   stock[2].id_plat =  2;
+   stock[2].quantity = 5;
+   stock[3].id_plat =  3;
+   stock[3].quantity = 5;
+   stock[4].id_plat =  4;
+   stock[4].quantity = 5;     /* Au démarrage du resto, tous les plats sont à une quantité de 5 */
 
    msg_buf.mtype = 1;
    msg_buf.signature = getpid();
    msg_buf.type = 0;
    msg_buf.id_resto = type_resto;
-   msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);
+   msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);  /* si le type est valide, on envoie les informations de connexion à hubert et on retourne 0 */
 
    return 0;
 
 }
+
+void fermeture_resto() {
+
+   kill(pid_cuisine,9);    /* on commence par tuer la cuisine */
+
+   msg_buf.mtype = 1;
+   msg_buf.signature = getpid();
+   msg_buf.type = -1;
+   msgsnd(msg_id, &msg_buf, sizeof(MSG) - sizeof(long), 0);    /* on envoie un message de deconnexion du resto à hubert */
+
+   /******************************************************
+   *          Suppression de la mémoire partagée
+   * ****************************************************/
+   int res = remove_shmem(shm_id);
+   if (res == -1) {
+     printf("Erreur suppression mémoire.\n");
+   } else {
+     printf("Mémoire supprimée.\n");
+   }
+
+   /******************************************************
+   *                Suppression du mutex
+   * ****************************************************/
+   res = remove_semaphore(mutex_id);
+   if (res == -1) {
+     printf("Erreur suppression mutex.\n");
+   } else {
+     printf("Mutex supprimé.\n");
+   }
+
+   exit(0);
+}
+
+void sigusr1_handle(){/* Ne fait rien */}

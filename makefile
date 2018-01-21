@@ -1,12 +1,12 @@
 all : resto hubert user
 
-user : user.c shmem.h semaphore.h msg.h
+user : user.c user.h shmem.h semaphore.h hubert_types.h
 	gcc user.c -o user -g
 
-resto : resto.c shmem.h semaphore.h msg.h
+resto : resto.c resto.h shmem.h semaphore.h hubert_types.h
 	gcc resto.c -o resto -g
 
-hubert : hubert.c shmem.h semaphore.h msg.h
+hubert : hubert.c hubert.h semaphore.h hubert_types.h
 	gcc hubert.c -o hubert -g
 
 clean :
